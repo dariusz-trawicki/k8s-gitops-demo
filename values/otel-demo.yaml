@@ -19,6 +19,10 @@ components:
     resources:
       limits:
         memory: 500Mi
+  checkout:
+    envOverrides:
+    - name: PAYMENT_ADDR
+      value: payment-v2:8080
 opentelemetry-collector:
   presets:
     kubeletMetrics:
