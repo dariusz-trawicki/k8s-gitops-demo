@@ -1,0 +1,33 @@
+# ArgoCD Application for the OpenTelemetry Demo: the Helm chart comes from the chart repository,
+# the values come from THIS repository (values/otel-demo.yaml) — the file the incident agent's PRs edit.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: otel-demo
+  namespace: argocd
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: otel-demo
+  sources:
+    - repoURL: https://open-telemetry.github.io/opentelemetry-helm-charts
+      chart: opentelemetry-demo
+      targetRevision: 0.42.1
+      helm:
+        releaseName: otel-demo            # same name as the helm release made by `make demo`: ArgoCD adopts it
+        valueFiles:
+          - $values/values/otel-demo.yaml
+    - repoURL: https://github.com/dariusz-trawicki/k8s-gitops-demo
+      targetRevision: main
+      ref: values
+  syncPolicy:
+    # Merge = deploy. prune/selfHeal stay off in this lab: chaos tooling and `make probes` change live objects.
+    automated: {prune: false, selfHeal: false}
+    syncOptions: [CreateNamespace=true, RespectIgnoreDifferences=true]
+  ignoreDifferences:
+    # Added by `make probes` (infra/cart-readiness-probe.yaml): the chart schema cannot express a gRPC probe.
+    - group: apps
+      kind: Deployment
+      name: cart
+      jsonPointers: [/spec/template/spec/containers/0/readinessProbe]

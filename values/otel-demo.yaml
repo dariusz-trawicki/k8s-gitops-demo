@@ -1,0 +1,165 @@
+components:
+  agent:
+    enabled: false
+  chatbot:
+    enabled: false
+  kafka:
+    resources:
+      limits:
+        memory: 1Gi
+  accounting:
+    resources:
+      limits:
+        memory: 300Mi
+  flagd:
+    resources:
+      limits:
+        memory: 150Mi
+  fraud-detection:
+    resources:
+      limits:
+        memory: 500Mi
+opentelemetry-collector:
+  presets:
+    kubeletMetrics:
+      enabled: false
+grafana:
+  resources:
+    limits:
+      memory: 600Mi
+prometheus:
+  alertmanager:
+    enabled: true
+    fullnameOverride: alertmanager
+    persistence:
+      enabled: false
+    configmapReload:
+      enabled: false
+    resources:
+      limits:
+        memory: 64Mi
+    config:
+      route:
+        receiver: incident-agent
+        group_by:
+        - alertname
+        - service
+        group_wait: 10s
+        group_interval: 1m
+        repeat_interval: 1h
+      receivers:
+      - name: incident-agent
+        webhook_configs:
+        - url: http://incident-agent.incident-agent.svc:8787/alertmanager
+          send_resolved: true
+          http_config:
+            authorization:
+              type: Bearer
+              credentials_file: /etc/alertmanager/incident-agent/token
+    extraSecretMounts:
+    - name: incident-agent-webhook
+      mountPath: /etc/alertmanager/incident-agent
+      secretName: incident-agent-webhook
+      readOnly: true
+  serverFiles:
+    alerting_rules.yml:
+      groups:
+      - name: incident-lab
+        rules:
+        - alert: HighErrorRate
+          expr: "label_replace(\n  sum by (service_name) (rate(traces_span_metrics_calls_total{status_code=\"\
+            STATUS_CODE_ERROR\", span_kind=~\"SPAN_KIND_SERVER|SPAN_KIND_CONSUMER\"\
+            }[5m]))\n  /\n  sum by (service_name) (rate(traces_span_metrics_calls_total{span_kind=~\"\
+            SPAN_KIND_SERVER|SPAN_KIND_CONSUMER\"}[5m]))\n  > 0.05,\n\"service\",\
+            \ \"$1\", \"service_name\", \"(.+)\")\n"
+          for: 2m
+          keep_firing_for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: '{{ $labels.service }} error ratio = {{ $value | humanizePercentage
+              }}'
+        - alert: HighOperationErrorRate
+          expr: "label_replace(\n  (\n    sum by (service_name, span_name) (rate(traces_span_metrics_calls_total{status_code=\"\
+            STATUS_CODE_ERROR\", span_kind=~\"SPAN_KIND_SERVER|SPAN_KIND_CONSUMER\"\
+            }[5m]))\n    /\n    sum by (service_name, span_name) (rate(traces_span_metrics_calls_total{span_kind=~\"\
+            SPAN_KIND_SERVER|SPAN_KIND_CONSUMER\"}[5m]))\n    > 0.05\n  )\n  and on\
+            \ (service_name, span_name)\n  sum by (service_name, span_name) (rate(traces_span_metrics_calls_total{span_kind=~\"\
+            SPAN_KIND_SERVER|SPAN_KIND_CONSUMER\"}[5m])) > 0.02,\n\"service\", \"\
+            $1\", \"service_name\", \"(.+)\")\n"
+          for: 2m
+          keep_firing_for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: '{{ $labels.service }} operation {{ $labels.span_name }} error
+              ratio = {{ $value | humanizePercentage }}'
+        - alert: HighCpuUsage
+          expr: "label_replace(\n  sum by (pod) (rate(container_cpu_usage_seconds_total{namespace=\"\
+            otel-demo\", container!=\"\", container!=\"POD\", pod!~\"(grafana|prometheus|alertmanager|opensearch|jaeger|otel-collector|load-generator|opamp-server|telemetry-docs)-.*\"\
+            }[5m])) > 0.5,\n\"service\", \"$1\", \"pod\", \"(.+)-[a-z0-9]+-[a-z0-9]+\"\
+            )\n"
+          for: 3m
+          labels:
+            severity: warning
+          annotations:
+            summary: '{{ $labels.pod }} uses {{ $value | humanize }} CPU cores'
+        - alert: KafkaConsumerLag
+          expr: "label_replace(\n  max by (group, topic) (kafka_consumer_group_lag_ratio)\
+            \ > 100,\n\"service\", \"$1\", \"group\", \"(.+)\")\n"
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: consumer group {{ $labels.group }} is {{ $value }} messages behind
+              on topic {{ $labels.topic }}
+        - alert: HighLatencyP95
+          expr: "label_replace(\n  histogram_quantile(0.95, sum by (service_name,\
+            \ le) (rate(traces_span_metrics_duration_milliseconds_bucket{span_kind=~\"\
+            SPAN_KIND_SERVER|SPAN_KIND_CONSUMER\"}[5m])))\n  > 2000,\n\"service\"\
+            , \"$1\", \"service_name\", \"(.+)\")\n"
+          for: 3m
+          labels:
+            severity: warning
+          annotations:
+            summary: '{{ $labels.service }} p95 latency = {{ $value | humanize }}
+              ms'
+        - alert: PodRestarting
+          expr: "label_replace(\n  increase(k8s_container_restarts{k8s_namespace_name=\"\
+            otel-demo\"}[10m]) > 1,\n\"service\", \"$1\", \"k8s_pod_name\", \"(.+)-[a-z0-9]+-[a-z0-9]+\"\
+            )\n"
+          labels:
+            severity: critical
+          annotations:
+            summary: Container in {{ $labels.k8s_pod_name }} is restarting
+        - alert: ContainerNotReady
+          expr: "label_replace(\n  k8s_container_ready{k8s_namespace_name=\"otel-demo\"\
+            } == 0,\n\"service\", \"$1\", \"k8s_pod_name\", \"(.+)-[a-z0-9]+-[a-z0-9]+\"\
+            )\n"
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: '{{ $labels.k8s_pod_name }} is not Ready'
+        - alert: MemoryGrowth
+          expr: "label_replace(\n  deriv(container_memory_working_set_bytes{namespace=\"\
+            otel-demo\", container!=\"\", container!=\"POD\", pod!~\"(grafana|prometheus|alertmanager|opensearch|jaeger|otel-collector|load-generator|opamp-server|telemetry-docs)-.*\"\
+            }[10m]) > 100000,\n\"service\", \"$1\", \"pod\", \"(.+)-[a-z0-9]+-[a-z0-9]+\"\
+            )\n"
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: '{{ $labels.pod }} memory keeps growing'
+        - alert: MemoryNearLimit
+          expr: "label_replace(\n  sum by (pod, container) (container_memory_working_set_bytes{namespace=\"\
+            otel-demo\", container!=\"\", container!=\"POD\", pod!~\"(grafana|prometheus|alertmanager|opensearch|jaeger|otel-collector|load-generator|opamp-server|telemetry-docs)-.*\"\
+            })\n  /\n  sum by (pod, container) (container_spec_memory_limit_bytes{namespace=\"\
+            otel-demo\", container!=\"\", container!=\"POD\"} > 0)\n  > 0.9,\n\"service\"\
+            , \"$1\", \"pod\", \"(.+)-[a-z0-9]+-[a-z0-9]+\")\n"
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: '{{ $labels.pod }} uses {{ $value | humanizePercentage }} of
+              its memory limit'
