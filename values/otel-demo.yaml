@@ -19,10 +19,6 @@ components:
     resources:
       limits:
         memory: 1Gi
-  checkout:
-    envOverrides:
-    - name: PAYMENT_ADDR
-      value: payment-v2:8080
 grafana:
   resources:
     limits:
